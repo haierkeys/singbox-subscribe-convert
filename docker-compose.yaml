@@ -1,6 +1,6 @@
 services:
   better-sync-service:
-    image: haierkeys/obsidian-better-sync-service:latest
+    image: haierkeys/singbox-subscribe-convert:latest
     container_name: better-sync-service
     ports:
       - "9000:9000"
