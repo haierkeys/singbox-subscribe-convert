@@ -1,6 +1,6 @@
 # 服务器配置
 server:
-  port: 8080
+  port: 9000
   read_timeout: 15  # 秒
   write_timeout: 15 # 秒
   idle_timeout: 60  # 秒

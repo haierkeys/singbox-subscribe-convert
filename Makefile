@@ -16,7 +16,7 @@ ReleaseTagPre = release-v
 DevelopTagPre = develop-v
 
 P_NAME = singbox-subscribe-convert
-P_BIN = sub-c
+P_BIN = sb-sub-c
 
 
 platform = $(shell uname -m)

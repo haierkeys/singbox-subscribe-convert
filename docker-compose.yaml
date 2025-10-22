@@ -1,13 +1,12 @@
 services:
-  better-sync-service:
+  singbox-subscribe-convert:
     image: haierkeys/singbox-subscribe-convert:latest
-    container_name: better-sync-service
+    container_name: singbox-subscribe-convert
     ports:
       - "9000:9000"
-      - "9001:9001"
     volumes:
-      - /data/better-sync-service/storage/:/api/storage/
-      - /data/better-sync-service/config/:/api/config/
+      - /data/singbox-subscribe-convert/storage/:/singbox-subscribe-convert/storage/
+      - /data/singbox-subscribe-convert/config/:/singbox-subscribe-convert/config/
     labels:
       - "com.centurylinklabs.watchtower.enable=true"  # 添加标签，标记为需要更新
 
