@@ -1,0 +1,33 @@
+# 服务器配置
+server:
+  port: 8080
+  read_timeout: 15  # 秒
+  write_timeout: 15 # 秒
+  idle_timeout: 60  # 秒
+
+# 认证配置
+auth:
+  password: "your_default_password"
+
+# 远程文件配置
+remote:
+  node_file_url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/node-example.json"
+  template_url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/1.12.json"
+  template_no_node: "🎯 全球直连"
+  request_timeout: 30  # 秒
+  refresh_interval: 2  # 分钟
+
+# 缓存配置
+cache:
+  directory: "./data/cache"
+  node_file: "node.json"
+  template_file: "template.json"
+
+# 日志配置
+logging:
+  production: true
+  file: "./data/log/server.log"
+  level: "info"  # debug, info, warn, error
+  max_size: 10   # MB
+  max_backups: 3
+  max_age: 7     # 天
