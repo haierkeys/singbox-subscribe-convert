@@ -17,6 +17,8 @@ remote:
   request_timeout: 30  # 秒
   refresh_interval: 2  # 分钟
 
+
+
 # 缓存配置
 cache:
   directory: "./data/cache"
