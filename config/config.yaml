@@ -36,14 +36,14 @@ default_template: "default"
 
 # 缓存配置
 cache:
-  directory: "./data/cache"
+  directory: "./storage/cache"
   node_file: "node.json"
   template_file: "template.json"
 
 # 日志配置
 logging:
   production: true
-  file: "./data/log/server.log"
+  file: "./storage/log/server.log"
   level: "info"  # debug, info, warn, error
   max_size: 10   # MB
   max_backups: 3
