@@ -13,11 +13,13 @@ import (
 
 // Config 全局配置结构
 type Config struct {
-	Server  ServerConfig  `yaml:"server"`
-	Auth    AuthConfig    `yaml:"auth"`
-	Remote  RemoteConfig  `yaml:"remote"`
-	Cache   CacheConfig   `yaml:"cache"`
-	Logging LoggingConfig `yaml:"logging"`
+	Server          ServerConfig              `yaml:"server"`
+	Auth            AuthConfig                `yaml:"auth"`
+	Subscription    SubscriptionConfig        `yaml:"subscription"`
+	Templates       map[string]TemplateConfig `yaml:"templates"`
+	DefaultTemplate string                    `yaml:"default_template"`
+	Cache           CacheConfig               `yaml:"cache"`
+	Logging         LoggingConfig             `yaml:"logging"`
 }
 
 // ServerConfig 服务器配置
@@ -33,13 +35,19 @@ type AuthConfig struct {
 	Password string `yaml:"password"`
 }
 
-// RemoteConfig 远程文件配置
-type RemoteConfig struct {
-	NodeFileURL     string `yaml:"node_file_url"`
-	TemplateURL     string `yaml:"template_url"`
-	TemplateNoNode  string `yaml:"template_no_node"`
-	RequestTimeout  int    `yaml:"request_timeout"`
+// SubscriptionConfig 订阅配置
+type SubscriptionConfig struct {
+	URL             string `yaml:"url"`
+	Timeout         int    `yaml:"timeout"`          // 秒
 	RefreshInterval int    `yaml:"refresh_interval"` // 分钟
+}
+
+// TemplateConfig 模板配置
+type TemplateConfig struct {
+	URL     string `yaml:"url"`
+	Name    string `yaml:"name"`
+	NoNode  string `yaml:"no_node"`
+	Enabled bool   `yaml:"enabled"`
 }
 
 // CacheConfig 缓存配置
@@ -112,17 +120,17 @@ func (c *Config) overrideWithEnv() {
 	if val := os.Getenv("PASSWORD"); val != "" {
 		c.Auth.Password = val
 	}
-	if val := os.Getenv("NODE_FILE_URL"); val != "" {
-		c.Remote.NodeFileURL = val
+	if val := os.Getenv("SUBSCRIPTION_URL"); val != "" {
+		c.Subscription.URL = val
 	}
-	if val := os.Getenv("TEMPLATE_URL"); val != "" {
-		c.Remote.TemplateURL = val
+	if val := os.Getenv("DEFAULT_TEMPLATE"); val != "" {
+		c.DefaultTemplate = val
 	}
 	if val := os.Getenv("CACHE_DIR"); val != "" {
 		c.Cache.Directory = val
 	}
 	if val := os.Getenv("REFRESH_INTERVAL"); val != "" {
-		fmt.Sscanf(val, "%d", &c.Remote.RefreshInterval)
+		fmt.Sscanf(val, "%d", &c.Subscription.RefreshInterval)
 	}
 }
 
@@ -134,18 +142,37 @@ func (c *Config) Validate() error {
 	if c.Auth.Password == "" {
 		return fmt.Errorf("password cannot be empty")
 	}
-	if c.Remote.NodeFileURL == "" {
-		return fmt.Errorf("node_file_url cannot be empty")
-	}
-	if c.Remote.TemplateURL == "" {
-		return fmt.Errorf("template_url cannot be empty")
-	}
 	if c.Cache.Directory == "" {
 		return fmt.Errorf("cache directory cannot be empty")
 	}
-	if c.Remote.RefreshInterval <= 0 {
-		return fmt.Errorf("refresh_interval must be greater than 0")
+	if c.Subscription.URL == "" {
+		return fmt.Errorf("subscription url cannot be empty")
 	}
+	if c.Subscription.RefreshInterval <= 0 {
+		return fmt.Errorf("subscription refresh_interval must be greater than 0")
+	}
+	if len(c.Templates) == 0 {
+		return fmt.Errorf("at least one template must be configured")
+	}
+	if c.DefaultTemplate == "" {
+		return fmt.Errorf("default_template cannot be empty")
+	}
+	if _, exists := c.Templates[c.DefaultTemplate]; !exists {
+		return fmt.Errorf("default_template '%s' not found in templates", c.DefaultTemplate)
+	}
+
+	// 验证至少有一个启用的模板
+	hasEnabled := false
+	for _, tpl := range c.Templates {
+		if tpl.Enabled {
+			hasEnabled = true
+			break
+		}
+	}
+	if !hasEnabled {
+		return fmt.Errorf("at least one template must be enabled")
+	}
+
 	return nil
 }
 
@@ -154,9 +181,34 @@ func (c *Config) GetNodeFilePath() string {
 	return filepath.Join(c.Cache.Directory, c.Cache.NodeFile)
 }
 
-// GetTemplateFilePath 获取模板文件缓存路径
-func (c *Config) GetTemplateFilePath() string {
-	return filepath.Join(c.Cache.Directory, c.Cache.TemplateFile)
+// GetTemplateFilePathByName 根据模板名称获取模板文件缓存路径
+func (c *Config) GetTemplateFilePathByName(templateName string) string {
+	return filepath.Join(c.Cache.Directory, fmt.Sprintf("template_%s.json", templateName))
+}
+
+// GetEnabledTemplates 获取所有启用的模板
+func (c *Config) GetEnabledTemplates() map[string]TemplateConfig {
+	enabled := make(map[string]TemplateConfig)
+	for name, tpl := range c.Templates {
+		if tpl.Enabled {
+			enabled[name] = tpl
+		}
+	}
+	return enabled
+}
+
+// GetTemplate 根据名称获取模板配置
+func (c *Config) GetTemplate(name string) (TemplateConfig, bool) {
+	tpl, exists := c.Templates[name]
+	return tpl, exists
+}
+
+// GetDefaultTemplateNoNode 获取默认模板的无节点标识
+func (c *Config) GetDefaultTemplateNoNode() string {
+	if tpl, exists := c.Templates[c.DefaultTemplate]; exists {
+		return tpl.NoNode
+	}
+	return "🎯 全球直连"
 }
 
 // GetLogFilePath 获取日志文件路径
@@ -166,12 +218,15 @@ func (c *Config) GetLogFilePath() string {
 
 // GetRefreshInterval 获取刷新间隔
 func (c *Config) GetRefreshInterval() time.Duration {
-	return time.Duration(c.Remote.RefreshInterval) * time.Minute
+	return time.Duration(c.Subscription.RefreshInterval) * time.Minute
 }
 
 // GetRequestTimeout 获取请求超时
 func (c *Config) GetRequestTimeout() time.Duration {
-	return time.Duration(c.Remote.RequestTimeout) * time.Second
+	if c.Subscription.Timeout > 0 {
+		return time.Duration(c.Subscription.Timeout) * time.Second
+	}
+	return 30 * time.Second
 }
 
 // GetServerReadTimeout 获取服务器读取超时

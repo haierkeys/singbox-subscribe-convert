@@ -9,15 +9,30 @@ server:
 auth:
   password: "your_default_password"
 
-# 远程文件配置
-remote:
-  node_file_url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/node-example.json"
-  template_url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/1.12.json"
-  template_no_node: "🎯 全球直连"
-  request_timeout: 30  # 秒
+# 节点订阅
+subscription:
+  url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/node-example.json"
+  timeout: 30  # 秒
   refresh_interval: 2  # 分钟
 
+# 模板列表
+templates:
+  # 模板1：默认配置 OpenWRT
+  default:
+    url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/1.12.json"
+    name: "OpenWRT"
+    no_node: "🎯 全球直连"
+    enabled: true
 
+  # 模板2：ios 1.11
+  ios:
+    url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/1.11-ios.json"
+    name: "iOS"
+    no_node: "🎯 全球直连"
+    enabled: true
+
+# 默认模板
+default_template: "default"
 
 # 缓存配置
 cache:

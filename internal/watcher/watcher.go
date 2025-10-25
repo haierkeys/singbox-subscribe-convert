@@ -12,7 +12,7 @@ import (
 )
 
 // Start 启动文件监控
-func Start(ctx context.Context, cfg *global.Config, logger *zap.Logger, onNodeChange, onTemplateChange func() error) {
+func Start(ctx context.Context, cfg *global.Config, logger *zap.Logger, onNodeChange func() error, onTemplateChange func(templateName string) error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		logger.Error("Error creating watcher",
@@ -37,8 +37,17 @@ func Start(ctx context.Context, cfg *global.Config, logger *zap.Logger, onNodeCh
 	debounce := make(map[string]time.Time)
 	debounceInterval := 1 * time.Second
 
+	// 获取节点文件路径
 	nodeFilePath, _ := filepath.Abs(cfg.GetNodeFilePath())
-	templateFilePath, _ := filepath.Abs(cfg.GetTemplateFilePath())
+
+	// 构建模板文件路径映射
+	templateFilePaths := make(map[string]string) // absPath -> templateName
+
+	// 为每个启用的模板创建路径映射
+	for name := range cfg.GetEnabledTemplates() {
+		absPath, _ := filepath.Abs(cfg.GetTemplateFilePathByName(name))
+		templateFilePaths[absPath] = name
+	}
 
 	for {
 		select {
@@ -72,16 +81,20 @@ func Start(ctx context.Context, cfg *global.Config, logger *zap.Logger, onNodeCh
 					} else {
 						logger.Info("✓ Node data reloaded successfully")
 					}
-				} else if absPath == templateFilePath {
+				} else if templateName, isTemplate := templateFilePaths[absPath]; isTemplate {
 					logger.Info("Template file changed, reloading...",
 						zap.String("file", absPath),
+						zap.String("template", templateName),
 					)
-					if err := onTemplateChange(); err != nil {
+					if err := onTemplateChange(templateName); err != nil {
 						logger.Error("Error reloading template",
+							zap.String("template", templateName),
 							zap.Error(err),
 						)
 					} else {
-						logger.Info("✓ Template reloaded successfully")
+						logger.Info("✓ Template reloaded successfully",
+							zap.String("template", templateName),
+						)
 					}
 				}
 			}

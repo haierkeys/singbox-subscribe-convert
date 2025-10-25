@@ -150,7 +150,7 @@ func (s *Server) startBackgroundServices(cfg *global.Config) {
 	go s.startAutoUpdate(cfg)
 
 	// 启动配置文件监控服务（监控配置变化并自动重载）
-	go watcher.Start(s.ctx, cfg, s.logger, handler.ReloadData, handler.ReloadTemplate)
+	go watcher.Start(s.ctx, cfg, s.logger, handler.ReloadData, handler.ReloadTemplateByName)
 }
 
 // logStartupInfo 记录服务器启动信息
@@ -162,11 +162,19 @@ func (s *Server) logStartupInfo(configPath string, cfg *global.Config) {
 		zap.String("git_tag", global.GitTag),
 		zap.String("build_time", global.BuildTime),
 	)
+
+	enabledTemplates := cfg.GetEnabledTemplates()
+	templateNames := make([]string, 0, len(enabledTemplates))
+	for name := range enabledTemplates {
+		templateNames = append(templateNames, name)
+	}
+
 	s.logger.Info("Configuration loaded",
 		zap.String("config_file", configPath),
 		zap.Int("server_port", cfg.Server.Port),
-		zap.String("node_file_url", cfg.Remote.NodeFileURL),
-		zap.String("template_url", cfg.Remote.TemplateURL),
+		zap.String("subscription_url", cfg.Subscription.URL),
+		zap.String("default_template", cfg.DefaultTemplate),
+		zap.Strings("enabled_templates", templateNames),
 		zap.String("cache_directory", cfg.Cache.Directory),
 		zap.Duration("auto_refresh_interval", cfg.GetRefreshInterval()),
 	)
@@ -283,18 +291,28 @@ type fetchTask struct {
 func (s *Server) performInitialFetch() error {
 	s.logger.Info("Starting initial fetch of remote files")
 
-	// 定义获取任务列表
-	tasks := []fetchTask{
-		{
-			name:     "node",
-			fetchFn:  fetcher.FetchNodeFile, // 获取节点文件
-			printMsg: "Fetching node file...",
-		},
-		{
-			name:     "template",
-			fetchFn:  fetcher.FetchTemplateFile, // 获取模板文件
-			printMsg: "Fetching template file...",
-		},
+	cfg := global.Cfg
+	var tasks []fetchTask
+
+	// 添加节点文件获取任务
+	tasks = append(tasks, fetchTask{
+		name:     "node",
+		fetchFn:  fetcher.FetchNodeFile,
+		printMsg: "Fetching node file...",
+	})
+
+	// 获取所有启用的模板
+	enabledTemplates := cfg.GetEnabledTemplates()
+	for name, tpl := range enabledTemplates {
+		templateName := name
+		templateURL := tpl.URL
+		tasks = append(tasks, fetchTask{
+			name: fmt.Sprintf("template_%s", templateName),
+			fetchFn: func() error {
+				return fetcher.FetchTemplateFileByName(templateName, templateURL)
+			},
+			printMsg: fmt.Sprintf("Fetching template '%s' (%s)...", tpl.Name, templateName),
+		})
 	}
 
 	// 并行获取所有文件
@@ -410,18 +428,27 @@ func (s *Server) performAutoUpdate(updateNum int, cfg *global.Config) {
 	fmt.Printf("\n[%s] Auto-updating files (#%d)...\n",
 		time.Now().Format("2006-01-02 15:04:05"), updateNum)
 
-	// 定义更新任务（同首次获取）
-	tasks := []fetchTask{
-		{
-			name:     "node",
-			fetchFn:  fetcher.FetchNodeFile,
-			printMsg: "Updating node file...",
-		},
-		{
-			name:     "template",
-			fetchFn:  fetcher.FetchTemplateFile,
-			printMsg: "Updating template file...",
-		},
+	var tasks []fetchTask
+
+	// 添加节点文件更新任务
+	tasks = append(tasks, fetchTask{
+		name:     "node",
+		fetchFn:  fetcher.FetchNodeFile,
+		printMsg: "Updating node file...",
+	})
+
+	// 更新所有启用的模板
+	enabledTemplates := cfg.GetEnabledTemplates()
+	for name, tpl := range enabledTemplates {
+		templateName := name
+		templateURL := tpl.URL
+		tasks = append(tasks, fetchTask{
+			name: fmt.Sprintf("template_%s", templateName),
+			fetchFn: func() error {
+				return fetcher.FetchTemplateFileByName(templateName, templateURL)
+			},
+			printMsg: fmt.Sprintf("Updating template '%s' (%s)...", tpl.Name, templateName),
+		})
 	}
 
 	// 并行获取文件

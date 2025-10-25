@@ -23,7 +23,7 @@ var (
 	nodesName []string
 	nodesData []map[string]interface{}
 	nodes     []string
-	template  *pongo2.Template
+	templates map[string]*pongo2.Template
 	dataMutex sync.RWMutex
 )
 
@@ -36,6 +36,9 @@ type NodeFile struct {
 func Init(c *global.Config, l *zap.Logger) error {
 	cfg = c
 	logger = l
+
+	// 初始化模板映射
+	templates = make(map[string]*pongo2.Template)
 
 	// 注册自定义过滤器
 	pongo2.RegisterFilter("NotesName", func(in *pongo2.Value, param *pongo2.Value) (*pongo2.Value, *pongo2.Error) {
@@ -54,8 +57,8 @@ func Init(c *global.Config, l *zap.Logger) error {
 		)
 	}
 
-	if err := ReloadTemplate(); err != nil {
-		logger.Warn("Failed to load initial template",
+	if err := ReloadAllTemplates(); err != nil {
+		logger.Warn("Failed to load initial templates",
 			zap.Error(err),
 		)
 	}
@@ -112,22 +115,48 @@ func ReloadData() error {
 	return nil
 }
 
-// ReloadTemplate 重新加载模板
-func ReloadTemplate() error {
+// ReloadTemplateByName 根据名称重新加载模板
+func ReloadTemplateByName(templateName string) error {
 	dataMutex.Lock()
 	defer dataMutex.Unlock()
-	templateFilePath := cfg.GetTemplateFilePath()
+
+	templateFilePath := cfg.GetTemplateFilePathByName(templateName)
 	if _, err := os.Stat(templateFilePath); os.IsNotExist(err) {
 		return fmt.Errorf("template file not found: %s", templateFilePath)
 	}
+
 	tpl, err := pongo2.FromFile(templateFilePath)
 	if err != nil {
 		return fmt.Errorf("load template error: %w", err)
 	}
-	template = tpl
+
+	templates[templateName] = tpl
 	logger.Info("✓ Loaded template from cache",
+		zap.String("template", templateName),
 		zap.String("file_path", templateFilePath),
 	)
+	return nil
+}
+
+// ReloadAllTemplates 重新加载所有启用的模板
+func ReloadAllTemplates() error {
+	enabledTemplates := cfg.GetEnabledTemplates()
+	var errors []string
+
+	for name := range enabledTemplates {
+		if err := ReloadTemplateByName(name); err != nil {
+			logger.Error("Failed to load template",
+				zap.String("template", name),
+				zap.Error(err),
+			)
+			errors = append(errors, fmt.Sprintf("%s: %v", name, err))
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("failed to load some templates: %s", strings.Join(errors, "; "))
+	}
+
 	return nil
 }
 
@@ -140,6 +169,8 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	setType := queryParams.Get("type")
 	password := queryParams.Get("password")
+	templateName := queryParams.Get("template") // 新增：支持指定模板
+
 	if password != cfg.Auth.Password {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -149,40 +180,72 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+
+	// 获取要使用的模板
+	if templateName == "" {
+		templateName = cfg.DefaultTemplate
+	}
+
 	dataMutex.RLock()
-	currentTemplate := template
+	var currentTemplate *pongo2.Template
+	var actualTemplateName string
+	var noNodeName string
+
+	// 检查模板是否启用
+	if tplConfig, exists := cfg.GetTemplate(templateName); exists && tplConfig.Enabled {
+		currentTemplate = templates[templateName]
+		actualTemplateName = tplConfig.Name
+		noNodeName = tplConfig.NoNode
+	} else {
+		dataMutex.RUnlock()
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Template '%s' not found or not enabled", templateName)))
+		logger.Warn("Template not found or not enabled",
+			zap.String("template", templateName),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		return
+	}
 	dataMutex.RUnlock()
+
 	if currentTemplate == nil {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Template not loaded"))
+		w.Write([]byte(fmt.Sprintf("Template '%s' not loaded", templateName)))
 		return
 	}
+
 	// 构建模板上下文
 	context := pongo2.Context{
 		"Nodes":     pongo2.AsSafeValue(strings.Join(nodes, ",\r\n")),
 		"setType":   setType,
 		"nodeCount": len(nodes),
+		"noNode":    noNodeName,
 	}
-	// tpl, _ := pongo2.FromString("{{ Nodes }}111111")
-	// output, err := tpl.Execute(context)
+
 	output, err := currentTemplate.Execute(context)
 	if err != nil {
 		logger.Error("Error rendering template",
 			zap.Error(err),
+			zap.String("template", templateName),
 		)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(fmt.Sprintf("Server Error: %v", err)))
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Profile-Update-Interval", "6")
 	w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=0; total=%d", len(nodes)))
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(output))
+
 	logger.Info("Successfully served config",
 		zap.String("remote_addr", r.RemoteAddr),
+		zap.String("template", templateName),
+		zap.String("template_name", actualTemplateName),
 		zap.String("type", setType),
 		zap.Int("node_count", len(nodes)),
 	)
@@ -192,19 +255,22 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	dataMutex.RLock()
 	hasData := len(nodesData) > 0
-	hasTemplate := template != nil
+	hasTemplate := len(templates) > 0
+	templateCount := len(templates)
 	nodeCount := len(nodesData)
 	dataMutex.RUnlock()
+
 	status := "ok"
 	code := http.StatusOK
 	if !hasData || !hasTemplate {
 		status = "degraded"
 		code = http.StatusServiceUnavailable
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	fmt.Fprintf(w, `{"status":"%s","has_data":%t,"has_template":%t,"node_count":%d}`,
-		status, hasData, hasTemplate, nodeCount)
+	fmt.Fprintf(w, `{"status":"%s","has_data":%t,"has_template":%t,"node_count":%d,"template_count":%d}`,
+		status, hasData, hasTemplate, nodeCount, templateCount)
 }
 
 // HandleRefresh 手动刷新
@@ -215,30 +281,54 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Password Error"))
 		return
 	}
+
 	logger.Info("Manual refresh triggered",
 		zap.String("remote_addr", r.RemoteAddr),
 	)
-	errChan := make(chan error, 2)
-	go func() {
-		if err := fetcher.FetchNodeFile(); err != nil {
-			errChan <- fmt.Errorf("node file: %w", err)
-		} else {
-			errChan <- ReloadData()
-		}
-	}()
-	go func() {
-		if err := fetcher.FetchTemplateFile(); err != nil {
-			errChan <- fmt.Errorf("template file: %w", err)
-		} else {
-			errChan <- ReloadTemplate()
-		}
-	}()
+
 	var errors []string
-	for i := 0; i < 2; i++ {
-		if err := <-errChan; err != nil {
-			errors = append(errors, err.Error())
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// 刷新节点文件
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := fetcher.FetchNodeFile(); err != nil {
+			mu.Lock()
+			errors = append(errors, fmt.Sprintf("node file: %v", err))
+			mu.Unlock()
+		} else {
+			if err := ReloadData(); err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Sprintf("reload node data: %v", err))
+				mu.Unlock()
+			}
 		}
+	}()
+
+	// 刷新所有启用的模板
+	enabledTemplates := cfg.GetEnabledTemplates()
+	for name, tpl := range enabledTemplates {
+		wg.Add(1)
+		go func(templateName string, templateURL string) {
+			defer wg.Done()
+			if err := fetcher.FetchTemplateFileByName(templateName, templateURL); err != nil {
+				mu.Lock()
+				errors = append(errors, fmt.Sprintf("template %s: %v", templateName, err))
+				mu.Unlock()
+			} else {
+				if err := ReloadTemplateByName(templateName); err != nil {
+					mu.Lock()
+					errors = append(errors, fmt.Sprintf("reload template %s: %v", templateName, err))
+					mu.Unlock()
+				}
+			}
+		}(name, tpl.URL)
 	}
+
+	wg.Wait()
+
 	w.Header().Set("Content-Type", "application/json")
 	if len(errors) > 0 {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -250,10 +340,15 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	} else {
 		dataMutex.RLock()
 		nodeCount := len(nodesData)
+		templateCount := len(templates)
 		dataMutex.RUnlock()
+
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"success","message":"Files refreshed successfully","node_count":%d}`, nodeCount)
-		logger.Info("Manual refresh completed successfully")
+		fmt.Fprintf(w, `{"status":"success","message":"Files refreshed successfully","node_count":%d,"template_count":%d}`, nodeCount, templateCount)
+		logger.Info("Manual refresh completed successfully",
+			zap.Int("node_count", nodeCount),
+			zap.Int("template_count", templateCount),
+		)
 	}
 }
 
@@ -261,6 +356,7 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 func nodeNameFilter(param string) string {
 	dataMutex.RLock()
 	defer dataMutex.RUnlock()
+
 	filteredList := []string{}
 	if param == "" {
 		// 如果没有参数,返回所有节点名
@@ -278,9 +374,13 @@ func nodeNameFilter(param string) string {
 			}
 		}
 	}
+
 	if len(filteredList) == 0 {
-		filteredList = append(filteredList, cfg.Remote.TemplateNoNode)
+		// 使用配置的无节点标识
+		noNodeName := cfg.GetDefaultTemplateNoNode()
+		filteredList = append(filteredList, noNodeName)
 	}
+
 	jsonBytes, _ := json.Marshal(filteredList)
 	s := string(jsonBytes)
 	// 去掉外层的 []

@@ -83,19 +83,44 @@ func fetchFile(url, cachePath string) error {
 
 // FetchNodeFile 获取节点文件
 func FetchNodeFile() error {
-	return fetchFile(cfg.Remote.NodeFileURL, cfg.GetNodeFilePath())
+	return fetchFile(cfg.Subscription.URL, cfg.GetNodeFilePath())
 }
 
-// FetchTemplateFile 获取模板文件
-func FetchTemplateFile() error {
-	return fetchFile(cfg.Remote.TemplateURL, cfg.GetTemplateFilePath())
+// FetchTemplateFileByName 根据模板名称获取模板文件
+func FetchTemplateFileByName(templateName string, templateURL string) error {
+	cachePath := cfg.GetTemplateFilePathByName(templateName)
+	return fetchFile(templateURL, cachePath)
+}
+
+// FetchAllTemplates 获取所有启用的模板文件
+func FetchAllTemplates() map[string]error {
+	errors := make(map[string]error)
+
+	// 获取所有启用的模板
+	enabledTemplates := cfg.GetEnabledTemplates()
+	for name, tpl := range enabledTemplates {
+		if err := FetchTemplateFileByName(name, tpl.URL); err != nil {
+			logger.Error("Failed to fetch template",
+				zap.String("template", name),
+				zap.String("url", tpl.URL),
+				zap.Error(err),
+			)
+			errors[name] = err
+		} else {
+			logger.Info("Successfully fetched template",
+				zap.String("template", name),
+				zap.String("name", tpl.Name),
+			)
+		}
+	}
+	return errors
 }
 
 // CheckCacheExists 检查缓存是否存在
 func CheckCacheExists() bool {
 	nodeExists := fileExists(cfg.GetNodeFilePath())
-	templateExists := fileExists(cfg.GetTemplateFilePath())
-	return nodeExists && templateExists
+	defaultTemplatePath := cfg.GetTemplateFilePathByName(cfg.DefaultTemplate)
+	return nodeExists && fileExists(defaultTemplatePath)
 }
 
 func fileExists(path string) bool {
