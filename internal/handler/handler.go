@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -273,6 +275,121 @@ func HandleHealth(w http.ResponseWriter, r *http.Request) {
 		status, hasData, hasTemplate, nodeCount, templateCount)
 }
 
+// PurgeCloudflareCache 清理 Cloudflare 缓存
+func PurgeCloudflareCache() error {
+	if !cfg.Cloudflare.Enabled {
+		logger.Debug("Cloudflare cache purge is disabled")
+		return nil
+	}
+
+	if cfg.Cloudflare.PurgeURL == "" {
+		return fmt.Errorf("cloudflare purge_url is not configured")
+	}
+
+	logger.Info("🧹 Starting Cloudflare cache purge...",
+		zap.String("purge_url", cfg.Cloudflare.PurgeURL),
+	)
+
+	// 构建请求体 - 清理所有缓存
+	requestBody := map[string]interface{}{
+		"purge_everything": true,
+	}
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		logger.Error("❌ Failed to marshal Cloudflare request body",
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	logger.Debug("Cloudflare purge request body",
+		zap.String("body", string(jsonData)),
+	)
+
+	// 创建 POST 请求
+	req, err := http.NewRequest("POST", cfg.Cloudflare.PurgeURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		logger.Error("❌ Failed to create Cloudflare request",
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// 设置认证 Headers
+	// 优先使用 API Token (推荐方式)
+	if cfg.Cloudflare.APIToken != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.Cloudflare.APIToken)
+		logger.Debug("Using Cloudflare API Token authentication")
+	} else if cfg.Cloudflare.APIKey != "" && cfg.Cloudflare.APIEmail != "" {
+		// 使用 API Key + Email 方式
+		req.Header.Set("X-Auth-Key", cfg.Cloudflare.APIKey)
+		req.Header.Set("X-Auth-Email", cfg.Cloudflare.APIEmail)
+		logger.Debug("Using Cloudflare API Key + Email authentication")
+	} else {
+		logger.Error("❌ No Cloudflare authentication configured")
+		return fmt.Errorf("cloudflare authentication not configured: either api_token or (api_key + api_email) is required")
+	}
+
+	// 发送请求
+	client := &http.Client{
+		Timeout: cfg.GetRequestTimeout(),
+	}
+
+	logger.Info("📤 Sending purge request to Cloudflare API...")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("❌ Failed to send request to Cloudflare",
+			zap.Error(err),
+			zap.String("url", cfg.Cloudflare.PurgeURL),
+		)
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Error("❌ Failed to read Cloudflare response",
+			zap.Error(err),
+		)
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	logger.Info("📥 Received response from Cloudflare",
+		zap.Int("status_code", resp.StatusCode),
+		zap.Int("body_size", len(body)),
+	)
+
+	// 检查响应状态
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Error("❌ Cloudflare API returned error",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(body)),
+		)
+		return fmt.Errorf("cloudflare API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// 尝试解析响应以获取更多信息
+	var cfResponse map[string]interface{}
+	if err := json.Unmarshal(body, &cfResponse); err == nil {
+		logger.Info("✅ Cloudflare cache purged successfully!",
+			zap.Int("status_code", resp.StatusCode),
+			zap.Any("cloudflare_response", cfResponse),
+		)
+	} else {
+		logger.Info("✅ Cloudflare cache purged successfully!",
+			zap.Int("status_code", resp.StatusCode),
+			zap.String("response", string(body)),
+		)
+	}
+
+	return nil
+}
+
 // HandleRefresh 手动刷新
 func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	password := r.URL.Query().Get("password")
@@ -328,6 +445,27 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	wg.Wait()
+
+	// 清理 Cloudflare 缓存（同步执行）
+	if cfg.Cloudflare.Enabled {
+		logger.Info("═══════════════════════════════════════════════")
+		logger.Info("🔄 Initiating Cloudflare cache purge...",
+			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("trigger", "manual_refresh"),
+		)
+		if err := PurgeCloudflareCache(); err != nil {
+			errors = append(errors, fmt.Sprintf("cloudflare cache purge: %v", err))
+			logger.Error("❌ Cloudflare cache purge failed",
+				zap.Error(err),
+				zap.String("remote_addr", r.RemoteAddr),
+			)
+		} else {
+			logger.Info("🎉 Cloudflare cache purge completed successfully!")
+		}
+		logger.Info("═══════════════════════════════════════════════")
+	} else {
+		logger.Debug("Cloudflare cache purge is disabled, skipping...")
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if len(errors) > 0 {

@@ -42,6 +42,7 @@
 - 📈 **详细日志** - 完善的日志系统，支持文件和控制台输出
 - ⚡ **优雅关闭** - 支持信号处理和优雅退出
 - 🌐 **跨平台** - 支持 Linux、macOS、Windows、Docker
+- ☁️ **Cloudflare 集成** - 支持自动清理 Cloudflare CDN 缓存
 
 ## 🚀 快速开始
 
@@ -187,6 +188,14 @@ cache:
   node_file: "node.json"
   template_file: "template.json"
 
+# refresh 接口 同步 Cloudflare 缓存清理 配置
+cloudflare:
+  enabled: false  # 是否启用 Cloudflare 缓存清理
+  purge_url: ""   # Cloudflare 缓存清理 API 地址 (例如: https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/purge_cache)
+  api_token: ""   # Cloudflare API Token (推荐) - 在 Cloudflare 控制台创建
+  api_key: ""     # Cloudflare API Key (可选) - 与 api_email 一起使用
+  api_email: ""   # Cloudflare 账户邮箱 (可选) - 与 api_key 一起使用
+
 # 日志配置
 logging:
   production: true               # 生产模式
@@ -234,6 +243,67 @@ logging:
 | `directory` | string | 缓存目录路径 |
 | `node_file` | string | 节点缓存文件名 |
 | `template_file` | string | 模板缓存文件名（旧格式） |
+
+#### Cloudflare (缓存清理配置)
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `enabled` | bool | 是 | 是否启用 Cloudflare 缓存清理功能 |
+| `purge_url` | string | 是* | Cloudflare 缓存清理 API 地址<br/>格式：`https://api.cloudflare.com/client/v4/zones/{zone_id}/purge_cache` |
+| `api_token` | string | 否** | Cloudflare API Token（推荐方式） |
+| `api_key` | string | 否** | Cloudflare Global API Key |
+| `api_email` | string | 否** | Cloudflare 账户邮箱（与 api_key 配合使用） |
+
+> **认证说明：**
+> - \* 当 `enabled: true` 时必填
+> - \*\* 必须配置以下任一认证方式：
+>   - **推荐**：`api_token`（API Token 方式）
+>   - **或**：`api_key` + `api_email`（Global API Key 方式）
+
+**获取认证信息：**
+
+1. **获取 API Token（推荐）：**
+   - 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+   - 进入 **My Profile** → **API Tokens**
+   - 点击 **Create Token** → 选择 **Custom Token** 或 **Cache Purge** 模板
+   - 设置权限：**Zone** → **Cache Purge** → **Purge**
+   - 设置 Zone Resources（选择你的域名）
+   - 创建并复制 Token
+
+2. **获取 Global API Key：**
+   - 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+   - 进入 **My Profile** → **API Tokens**
+   - 找到 **Global API Key** → 点击 **View**
+
+3. **获取 Zone ID：**
+   - 在 Cloudflare Dashboard 中选择你的域名
+   - 右侧边栏 **API** 部分可以看到 **Zone ID**
+
+**配置示例：**
+
+```yaml
+# 使用 API Token（推荐）
+cloudflare:
+  enabled: true
+  purge_url: "https://api.cloudflare.com/client/v4/zones/abc123def456/purge_cache"
+  api_token: "your_api_token_here"
+  api_key: ""
+  api_email: ""
+
+# 或使用 Global API Key
+cloudflare:
+  enabled: true
+  purge_url: "https://api.cloudflare.com/client/v4/zones/abc123def456/purge_cache"
+  api_token: ""
+  api_key: "your_global_api_key"
+  api_email: "your_email@example.com"
+```
+
+**工作流程：**
+当调用 `/refresh` 接口时，系统会：
+1. 并发刷新节点文件和模板文件
+2. 等待所有刷新任务完成
+3. 如果启用了 Cloudflare，同步调用 Cloudflare API 清理缓存
+4. 返回刷新结果（包含 Cloudflare 清理状态）
 
 #### Logging (日志配置)
 | 参数 | 类型 | 说明 |
@@ -360,6 +430,12 @@ GET /refresh?password=<密码>
 http://localhost:9000/refresh?password=your_password
 ```
 
+**功能说明：**
+此接口会执行以下操作：
+1. 并发刷新所有启用的节点文件和模板文件
+2. 重新加载配置数据到内存
+3. **如果配置了 Cloudflare 缓存清理，会同步清理 CDN 缓存**
+4. 返回操作结果
 
 **响应成功：**
 ```json
@@ -377,7 +453,8 @@ http://localhost:9000/refresh?password=your_password
   "status": "error",
   "errors": [
     "node file: fetch error",
-    "template gaming: load error"
+    "template gaming: load error",
+    "cloudflare cache purge: authentication error"
   ]
 }
 ```
@@ -608,6 +685,40 @@ curl "http://localhost:9000/?password=xxx&template=ios"
 - 配置文件变更会自动重载（需等待几秒）
 - 或手动重启服务
 - 检查配置文件语法是否正确
+
+### 7. Cloudflare 缓存清理失败
+
+**问题：** 返回 "Missing X-Auth-Key, X-Auth-Email or Authorization headers"
+
+**解决方案：**
+- 确认已配置 `api_token` 或 (`api_key` + `api_email`)
+- 检查 API Token 是否有效（未过期）
+- 确认 API Token 具有 **Cache Purge** 权限
+- 验证 Zone ID 是否正确
+
+**问题：** 返回 "Authentication error" 或状态码 403
+
+**解决方案：**
+- API Token 权限不足，需要添加 **Zone - Cache Purge - Purge** 权限
+- 确认 Zone Resources 包含了目标域名
+- 如使用 Global API Key，确认 email 地址正确
+
+**问题：** Cloudflare 缓存清理超时
+
+**解决方案：**
+- 检查网络连接到 Cloudflare API 是否正常
+- 增加 `subscription.timeout` 配置值（默认 30 秒）
+- 查看详细错误日志
+
+**问题：** 需要查看 Cloudflare 清理详细日志
+
+**解决方案：**
+- 将日志级别设置为 `debug`：
+  ```yaml
+  logging:
+    level: "debug"
+  ```
+- 重启服务后会显示详细的请求和响应信息
 
 ## 🤝 贡献
 

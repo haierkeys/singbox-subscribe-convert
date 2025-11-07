@@ -19,6 +19,7 @@ type Config struct {
 	Templates       map[string]TemplateConfig `yaml:"templates"`
 	DefaultTemplate string                    `yaml:"default_template"`
 	Cache           CacheConfig               `yaml:"cache"`
+	Cloudflare      CloudflareConfig          `yaml:"cloudflare"`
 	Logging         LoggingConfig             `yaml:"logging"`
 }
 
@@ -40,6 +41,15 @@ type SubscriptionConfig struct {
 	URL             string `yaml:"url"`
 	Timeout         int    `yaml:"timeout"`          // 秒
 	RefreshInterval int    `yaml:"refresh_interval"` // 分钟
+}
+
+// CloudflareConfig Cloudflare 配置
+type CloudflareConfig struct {
+	PurgeURL string `yaml:"purge_url"` // Cloudflare 缓存清理 API 地址
+	Enabled  bool   `yaml:"enabled"`   // 是否启用 Cloudflare 缓存清理
+	APIToken string `yaml:"api_token"` // Cloudflare API Token (推荐使用)
+	APIKey   string `yaml:"api_key"`   // Cloudflare API Key (可选，与 api_email 一起使用)
+	APIEmail string `yaml:"api_email"` // Cloudflare API Email (与 api_key 一起使用)
 }
 
 // TemplateConfig 模板配置

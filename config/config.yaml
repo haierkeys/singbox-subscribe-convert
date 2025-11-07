@@ -40,6 +40,14 @@ cache:
   node_file: "node.json"
   template_file: "template.json"
 
+# Cloudflare 配置
+cloudflare:
+  enabled: false  # 是否启用 Cloudflare 缓存清理
+  purge_url: ""   # Cloudflare 缓存清理 API 地址 (例如: https://api.cloudflare.com/client/v4/zones/YOUR_ZONE_ID/purge_cache)
+  api_token: ""   # Cloudflare API Token (推荐) - 在 Cloudflare 控制台创建
+  api_key: ""     # Cloudflare API Key (可选) - 与 api_email 一起使用
+  api_email: ""   # Cloudflare 账户邮箱 (可选) - 与 api_key 一起使用
+
 # 日志配置
 logging:
   production: true
