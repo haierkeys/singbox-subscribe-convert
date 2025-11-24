@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -40,9 +41,11 @@ func Init(c *global.Config, l *zap.Logger) {
 
 // fetchFile 从 URL 获取文件并保存
 func fetchFile(url, cachePath string) error {
-	logger.Info("Fetching file from %s", zap.String("url", url))
+	// 添加随机数参数以绕过 CDN 缓存
+	urlWithParam := addCacheBusterParam(url)
+	logger.Info("Fetching file from %s", zap.String("url", urlWithParam))
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequest("GET", urlWithParam, nil)
 	if err != nil {
 		return fmt.Errorf("create request error: %w", err)
 	}
@@ -129,4 +132,15 @@ func fileExists(path string) bool {
 		return false
 	}
 	return !info.IsDir() && info.Size() > 0
+}
+
+// addCacheBusterParam 给 URL 添加随机数参数以绕过 CDN 缓存
+func addCacheBusterParam(url string) string {
+	separator := "?"
+	if strings.Contains(url, "?") {
+		separator = "&"
+	}
+	// 使用时间戳纳秒作为随机参数
+	timestamp := time.Now().UnixNano()
+	return fmt.Sprintf("%s%s_t=%d", url, separator, timestamp)
 }
