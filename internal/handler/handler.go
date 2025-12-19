@@ -164,6 +164,12 @@ func ReloadAllTemplates() error {
 
 // HandleRequest 处理主请求
 func HandleRequest(w http.ResponseWriter, r *http.Request) {
+	// 如果路径不是根路径，则直接返回 404，不进入鉴权逻辑，避免干扰日志
+	if r.URL.Path != "/" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
 	logger.Info("Request received",
 		zap.String("remote_addr", r.RemoteAddr),
 		zap.String("path", r.URL.Path),
@@ -179,6 +185,7 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Password Error"))
 		logger.Warn("Unauthorized request",
 			zap.String("remote_addr", r.RemoteAddr),
+			zap.String("path", r.URL.Path),
 		)
 		return
 	}
