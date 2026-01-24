@@ -120,24 +120,19 @@ func (s *Server) initLogger() error {
 	return nil
 }
 
-// initializeData 初始化数据（首次获取或使用缓存）
+// initializeData 初始化数据（启动时总是获取最新远程文件）
 func (s *Server) initializeData() error {
-	// 检查缓存是否存在
-	if !fetcher.CheckCacheExists() {
-		s.logger.Info("Cache not found, performing initial fetch...")
-		fmt.Println("Fetching remote files for the first time...")
+	s.logger.Info("Starting initial fetch of remote files...")
+	fmt.Println("Fetching remote files...")
 
-		// 执行首次文件获取
-		if err := s.performInitialFetch(); err != nil {
-			s.logger.Warn("Initial fetch failed", zap.Error(err))
-			return err
-		}
-
-		s.logger.Info("✓ Initial fetch completed successfully")
-		fmt.Println("✓ Initial fetch completed successfully")
-	} else {
-		s.logger.Info("Using existing cache files")
+	// 执行首次文件获取
+	if err := s.performInitialFetch(); err != nil {
+		s.logger.Warn("Initial fetch failed", zap.Error(err))
+		return err
 	}
+
+	s.logger.Info("✓ Initial fetch completed successfully")
+	fmt.Println("✓ Initial fetch completed successfully")
 	return nil
 }
 
@@ -222,7 +217,7 @@ func (s *Server) printServerInfo(port int) {
 	fmt.Printf("✓ Server is running on http://localhost:%d\n", port)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("\nAvailable endpoints:")
-	fmt.Printf("  • Main:    http://localhost:%d/?password=xxx&type=xxx\n", port)
+	fmt.Printf("  • Main:    http://localhost:%d/?password=xxx&type=xxx&_t=%d\n", port, time.Now().Unix())
 	fmt.Printf("  • Health:  http://localhost:%d/health\n", port)
 	fmt.Printf("  • Refresh: http://localhost:%d/refresh?password=xxx\n", port)
 	fmt.Println("\nPress Ctrl+C to stop")

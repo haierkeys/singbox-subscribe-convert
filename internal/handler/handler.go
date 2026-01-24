@@ -177,7 +177,8 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 	queryParams := r.URL.Query()
 	setType := queryParams.Get("type")
 	password := queryParams.Get("password")
-	templateName := queryParams.Get("template") // 新增：支持指定模板
+	templateName := queryParams.Get("template")
+	refresh := queryParams.Get("refresh")
 
 	if password != cfg.Auth.Password {
 		w.Header().Set("Content-Type", "text/plain")
@@ -188,6 +189,21 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 			zap.String("path", r.URL.Path),
 		)
 		return
+	}
+
+	// 如果设置了 refresh 参数，则先拉取最新数据
+	if refresh == "1" || refresh == "true" {
+		logger.Info("Forced refresh via request parameter", zap.String("remote_addr", r.RemoteAddr))
+		// 1. 拉取节点文件
+		if err := fetcher.FetchNodeFile(); err != nil {
+			logger.Error("Failed to fetch node file during refresh", zap.Error(err))
+		} else {
+			ReloadData()
+		}
+
+		// 2. 拉取所有模板并重新加载
+		fetcher.FetchAllTemplates()
+		ReloadAllTemplates()
 	}
 
 	// 获取要使用的模板
@@ -248,6 +264,11 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Profile-Update-Interval", "6")
 	w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=0; total=%d", len(nodes)))
+	// 添加防缓存 Header
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(output))
 

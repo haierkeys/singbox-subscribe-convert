@@ -52,6 +52,9 @@ func fetchFile(url, cachePath string) error {
 
 	req.Header.Set("User-Agent", "Singbox-Subscribe-Convert/1.0")
 	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	req.Header.Set("Pragma", "no-cache")
+	req.Header.Set("Expires", "0")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
