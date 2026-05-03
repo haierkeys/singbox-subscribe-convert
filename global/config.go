@@ -54,10 +54,11 @@ type CloudflareConfig struct {
 
 // TemplateConfig 模板配置
 type TemplateConfig struct {
-	URL     string `yaml:"url"`
-	Name    string `yaml:"name"`
-	NoNode  string `yaml:"no_node"`
-	Enabled bool   `yaml:"enabled"`
+	URL            string `yaml:"url"`
+	Name           string `yaml:"name"`
+	NoNode         string `yaml:"no_node"`
+	Enabled        bool   `yaml:"enabled"`
+	UpdateInterval int    `yaml:"update_interval"` // 秒
 }
 
 // CacheConfig 缓存配置
@@ -219,6 +220,14 @@ func (c *Config) GetDefaultTemplateNoNode() string {
 		return tpl.NoNode
 	}
 	return "🎯 全球直连"
+}
+// GetTemplateUpdateInterval 获取模板更新间隔
+func (c *Config) GetTemplateUpdateInterval(templateName string) time.Duration {
+	if tpl, exists := c.Templates[templateName]; exists && tpl.UpdateInterval > 0 {
+		return time.Duration(tpl.UpdateInterval) * time.Second
+	}
+	// 默认 1 小时
+	return 1 * time.Hour
 }
 
 // GetLogFilePath 获取日志文件路径

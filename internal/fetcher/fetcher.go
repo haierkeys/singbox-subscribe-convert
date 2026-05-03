@@ -1,7 +1,9 @@
 package fetcher
 
 import (
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,7 +45,12 @@ func Init(c *global.Config, l *zap.Logger) {
 func fetchFile(url, cachePath string) error {
 	// 添加随机数参数以绕过 CDN 缓存
 	urlWithParam := addCacheBusterParam(url)
-	logger.Info("Fetching file from %s", zap.String("url", urlWithParam))
+	fmt.Println("\n==================================================")
+	fmt.Printf("🚀 DOWNLOAD URL: %s\n", urlWithParam)
+	fmt.Println("==================================================\n")
+	logger.Info("🚀 [DOWNLOAD] Starting fetch from URL: " + urlWithParam)
+	// 同时向 Stderr 打印一份，防止 Stdout 被缓冲
+	fmt.Fprintf(os.Stderr, "[FETCHING] %s\n", urlWithParam)
 
 	req, err := http.NewRequest("GET", urlWithParam, nil)
 	if err != nil {
@@ -124,17 +131,26 @@ func FetchAllTemplates() map[string]error {
 
 // CheckCacheExists 检查缓存是否存在
 func CheckCacheExists() bool {
-	nodeExists := fileExists(cfg.GetNodeFilePath())
+	nodeExists := IsFileExists(cfg.GetNodeFilePath())
 	defaultTemplatePath := cfg.GetTemplateFilePathByName(cfg.DefaultTemplate)
-	return nodeExists && fileExists(defaultTemplatePath)
+	return nodeExists && IsFileExists(defaultTemplatePath)
 }
 
-func fileExists(path string) bool {
+func IsFileExists(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
 	return !info.IsDir() && info.Size() > 0
+}
+
+// GetFileModTime 获取文件修改时间
+func GetFileModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 // addCacheBusterParam 给 URL 添加随机数参数以绕过 CDN 缓存
@@ -143,7 +159,13 @@ func addCacheBusterParam(url string) string {
 	if strings.Contains(url, "?") {
 		separator = "&"
 	}
-	// 使用时间戳纳秒作为随机参数
+
+	// 生成 4 字节的随机十六进制字符串 (8个字符)
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	randomStr := hex.EncodeToString(b)
+
+	// 使用时间戳和随机字符串
 	timestamp := time.Now().UnixNano()
-	return fmt.Sprintf("%s%s_t=%d", url, separator, timestamp)
+	return fmt.Sprintf("%s%s_t=%d&_r=%s", url, separator, timestamp, randomStr)
 }

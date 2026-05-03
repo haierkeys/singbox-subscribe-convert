@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/haierkeys/singbox-subscribe-convert/global"
 	"github.com/haierkeys/singbox-subscribe-convert/internal/fetcher"
@@ -170,6 +171,7 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Printf("\n[DEBUG] >>> New Request: %s\n", r.URL.String())
 	logger.Info("Request received",
 		zap.String("remote_addr", r.RemoteAddr),
 		zap.String("path", r.URL.Path),
@@ -178,9 +180,14 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 	setType := queryParams.Get("type")
 	password := queryParams.Get("password")
 	templateName := queryParams.Get("template")
+	// 如果 template 参数为空，回退到 type 参数
+	if templateName == "" {
+		templateName = setType
+	}
 	refresh := queryParams.Get("refresh")
 
 	if password != cfg.Auth.Password {
+		fmt.Printf("[DEBUG] !!! Auth Failed: expected '%s', got '%s'\n", cfg.Auth.Password, password)
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusUnauthorized)
 		w.Write([]byte("Password Error"))
@@ -190,6 +197,7 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+	fmt.Println("[DEBUG] <<< Auth Success")
 
 	// 如果设置了 refresh 参数，则先拉取最新数据
 	if refresh == "1" || refresh == "true" {
@@ -211,6 +219,19 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		templateName = cfg.DefaultTemplate
 	}
 
+	// 确保模板可用（检查存在性与更新）
+	if err := EnsureTemplate(templateName); err != nil {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Template Error: %v", err)))
+		logger.Warn("Template error",
+			zap.String("template", templateName),
+			zap.Error(err),
+			zap.String("remote_addr", r.RemoteAddr),
+		)
+		return
+	}
+
 	dataMutex.RLock()
 	var currentTemplate *pongo2.Template
 	var actualTemplateName string
@@ -226,10 +247,6 @@ func HandleRequest(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(fmt.Sprintf("Template '%s' not found or not enabled", templateName)))
-		logger.Warn("Template not found or not enabled",
-			zap.String("template", templateName),
-			zap.String("remote_addr", r.RemoteAddr),
-		)
 		return
 	}
 	dataMutex.RUnlock()
@@ -554,4 +571,75 @@ func nodeNameFilter(param string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// EnsureTemplate 确保模板可用，如果不存在则下载，如果过期则更新
+func EnsureTemplate(templateName string) error {
+	// 1. 获取模板配置
+	tplConfig, exists := cfg.GetTemplate(templateName)
+	if !exists {
+		return fmt.Errorf("template '%s' not found in configuration", templateName)
+	}
+
+	if !tplConfig.Enabled {
+		return fmt.Errorf("template '%s' is disabled", templateName)
+	}
+
+	templateFilePath := cfg.GetTemplateFilePathByName(templateName)
+	needDownload := false
+
+	// 2. 检查磁盘文件是否存在
+	if !fetcher.IsFileExists(templateFilePath) {
+		msg := fmt.Sprintf("Template '%s' not found locally, triggering immediate download...", templateName)
+		fmt.Println("--------------------------------------------------")
+		fmt.Println("[ON-DEMAND] " + msg)
+		fmt.Println("--------------------------------------------------")
+		logger.Info(msg, zap.String("path", templateFilePath))
+		needDownload = true
+	} else {
+		// 3. 检查是否过期
+		updateInterval := cfg.GetTemplateUpdateInterval(templateName)
+		modTime := fetcher.GetFileModTime(templateFilePath)
+		if time.Since(modTime) > updateInterval {
+			logger.Info("Template cache expired, checking for updates",
+				zap.String("template", templateName),
+				zap.Duration("age", time.Since(modTime)),
+				zap.Duration("interval", updateInterval),
+			)
+			needDownload = true
+		}
+	}
+
+	// 4. 如果需要下载/更新
+	if needDownload {
+		if err := fetcher.FetchTemplateFileByName(templateName, tplConfig.URL); err != nil {
+			// 如果下载失败但本地文件已存在，则降级使用本地文件
+			if fetcher.IsFileExists(templateFilePath) {
+				logger.Warn("Failed to fetch latest template, using existing local cache",
+					zap.String("template", templateName),
+					zap.Error(err),
+				)
+			} else {
+				return fmt.Errorf("failed to download template: %w", err)
+			}
+		} else {
+			// 下载成功，重新加载到内存
+			if err := ReloadTemplateByName(templateName); err != nil {
+				return fmt.Errorf("failed to reload template after download: %w", err)
+			}
+		}
+	}
+
+	// 5. 确保已加载到内存中
+	dataMutex.RLock()
+	_, loaded := templates[templateName]
+	dataMutex.RUnlock()
+
+	if !loaded {
+		if err := ReloadTemplateByName(templateName); err != nil {
+			return fmt.Errorf("failed to load template into memory: %w", err)
+		}
+	}
+
+	return nil
 }

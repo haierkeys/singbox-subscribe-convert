@@ -31,6 +31,14 @@ templates:
     no_node: "🎯 全球直连"
     enabled: true
 
+  # 模板3：ios 1.13
+  1.13-ios:
+    url: "https://raw.githubusercontent.com/haierkeys/free-network-tool/master/singbox/1.13-ios.json"
+    name: "iOS 1.13"
+    no_node: "🎯 全球直连"
+    enabled: true
+    update_interval: 3600
+
 # 默认模板
 default_template: "default"
 
