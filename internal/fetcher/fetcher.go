@@ -57,7 +57,9 @@ func fetchFile(url, cachePath string) error {
 		return fmt.Errorf("create request error: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Singbox-Subscribe-Convert/1.0")
+	// Use browser User-Agent to prevent subscription conversion server from returning degraded nodes.
+	// 使用浏览器 User-Agent，防止订阅转换站返回降级节点。
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	req.Header.Set("Pragma", "no-cache")
