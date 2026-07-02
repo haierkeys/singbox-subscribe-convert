@@ -45,12 +45,7 @@ func Init(c *global.Config, l *zap.Logger) {
 func fetchFile(url, cachePath string) error {
 	// 添加随机数参数以绕过 CDN 缓存
 	urlWithParam := addCacheBusterParam(url)
-	fmt.Println("\n==================================================")
-	fmt.Printf("🚀 DOWNLOAD URL: %s\n", urlWithParam)
-	fmt.Println("==================================================\n")
-	logger.Info("🚀 [DOWNLOAD] Starting fetch from URL: " + urlWithParam)
-	// 同时向 Stderr 打印一份，防止 Stdout 被缓冲
-	fmt.Fprintf(os.Stderr, "[FETCHING] %s\n", urlWithParam)
+	logger.Debug("🚀 [DOWNLOAD] Starting fetch from URL: " + urlWithParam)
 
 	req, err := http.NewRequest("GET", urlWithParam, nil)
 	if err != nil {
@@ -92,19 +87,39 @@ func fetchFile(url, cachePath string) error {
 		return fmt.Errorf("write cache file error: %w", err)
 	}
 
-	logger.Info("Successfully fetched and cached: %s (%d bytes)", zap.String("cachePath", cachePath), zap.Int("len", len(data)))
+	logger.Debug("Successfully fetched and cached", zap.String("cachePath", cachePath), zap.Int("len", len(data)))
 	return nil
 }
 
+// FetchNodeFileWithURL 获取节点文件并返回带随机参数的真实 URL
+// Fetch node file and return the actual URL with cache buster parameters.
+func FetchNodeFileWithURL() (string, error) {
+	urlWithParam := addCacheBusterParam(cfg.Subscription.URL)
+	err := fetchFile(urlWithParam, cfg.GetNodeFilePath())
+	return urlWithParam, err
+}
+
 // FetchNodeFile 获取节点文件
+// Fetch node file.
 func FetchNodeFile() error {
-	return fetchFile(cfg.Subscription.URL, cfg.GetNodeFilePath())
+	_, err := FetchNodeFileWithURL()
+	return err
+}
+
+// FetchTemplateFileByNameWithURL 根据模板名称和 URL 获取模板文件并返回真实 URL
+// Fetch template file by name and URL, and return the actual URL with cache buster parameters.
+func FetchTemplateFileByNameWithURL(templateName string, templateURL string) (string, error) {
+	urlWithParam := addCacheBusterParam(templateURL)
+	cachePath := cfg.GetTemplateFilePathByName(templateName)
+	err := fetchFile(urlWithParam, cachePath)
+	return urlWithParam, err
 }
 
 // FetchTemplateFileByName 根据模板名称获取模板文件
+// Fetch template file by name.
 func FetchTemplateFileByName(templateName string, templateURL string) error {
-	cachePath := cfg.GetTemplateFilePathByName(templateName)
-	return fetchFile(templateURL, cachePath)
+	_, err := FetchTemplateFileByNameWithURL(templateName, templateURL)
+	return err
 }
 
 // FetchAllTemplates 获取所有启用的模板文件
@@ -156,7 +171,11 @@ func GetFileModTime(path string) time.Time {
 }
 
 // addCacheBusterParam 给 URL 添加随机数参数以绕过 CDN 缓存
+// Add cache buster parameter to URL to bypass CDN cache.
 func addCacheBusterParam(url string) string {
+	if strings.Contains(url, "_t=") || strings.Contains(url, "_r=") {
+		return url
+	}
 	separator := "?"
 	if strings.Contains(url, "?") {
 		separator = "&"
@@ -167,7 +186,7 @@ func addCacheBusterParam(url string) string {
 	_, _ = rand.Read(b)
 	randomStr := hex.EncodeToString(b)
 
-	// 使用时间戳和随机字符串
+	// 使用时间戳 and 随机字符串
 	timestamp := time.Now().UnixNano()
 	return fmt.Sprintf("%s%s_t=%d&_r=%s", url, separator, timestamp, randomStr)
 }

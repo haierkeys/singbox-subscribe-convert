@@ -111,7 +111,7 @@ func ReloadData() error {
 		}
 	}
 
-	logger.Info("✓ Loaded node data",
+	logger.Debug("✓ Loaded node data",
 		zap.String("file_path", nodeFilePath),
 		zap.Int("outbounds", len(nodesName)),
 	)
@@ -134,7 +134,7 @@ func ReloadTemplateByName(templateName string) error {
 	}
 
 	templates[templateName] = tpl
-	logger.Info("✓ Loaded template from cache",
+	logger.Debug("✓ Loaded template from cache",
 		zap.String("template", templateName),
 		zap.String("file_path", templateFilePath),
 	)
@@ -436,6 +436,7 @@ func PurgeCloudflareCache() error {
 }
 
 // HandleRefresh 手动刷新
+// Handle manual refresh request.
 func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	password := r.URL.Query().Get("password")
 	if password != cfg.Auth.Password {
@@ -448,69 +449,184 @@ func HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		zap.String("remote_addr", r.RemoteAddr),
 	)
 
+	fmt.Println("\n==================================================")
+	fmt.Println("🔄 MANUAL REFRESH START")
+	fmt.Println("==================================================")
+
 	var errors []string
-	var wg sync.WaitGroup
-	var mu sync.Mutex
 
-	// 刷新节点文件
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := fetcher.FetchNodeFile(); err != nil {
-			mu.Lock()
-			errors = append(errors, fmt.Sprintf("node file: %v", err))
-			mu.Unlock()
-		} else {
-			if err := ReloadData(); err != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Sprintf("reload node data: %v", err))
-				mu.Unlock()
-			}
-		}
-	}()
-
-	// 刷新所有启用的模板
-	enabledTemplates := cfg.GetEnabledTemplates()
-	for name, tpl := range enabledTemplates {
-		wg.Add(1)
-		go func(templateName string, templateURL string) {
-			defer wg.Done()
-			if err := fetcher.FetchTemplateFileByName(templateName, templateURL); err != nil {
-				mu.Lock()
-				errors = append(errors, fmt.Sprintf("template %s: %v", templateName, err))
-				mu.Unlock()
-			} else {
-				if err := ReloadTemplateByName(templateName); err != nil {
-					mu.Lock()
-					errors = append(errors, fmt.Sprintf("reload template %s: %v", templateName, err))
-					mu.Unlock()
-				}
-			}
-		}(name, tpl.URL)
-	}
-
-	wg.Wait()
-
-	// 清理 Cloudflare 缓存（同步执行）
+	// [1/3] ☁️ CLOUDFLARE PURGE
+	// [1/3] 清理 Cloudflare 缓存
 	if cfg.Cloudflare.Enabled {
-		logger.Info("═══════════════════════════════════════════════")
+		fmt.Printf("\n[1/3] ☁️ CLOUDFLARE PURGE\n")
+		fmt.Println("--------------------------------------------------")
+		fmt.Printf("- Request URL:  %s\n", cfg.Cloudflare.PurgeURL)
+
 		logger.Info("🔄 Initiating Cloudflare cache purge...",
 			zap.String("remote_addr", r.RemoteAddr),
 			zap.String("trigger", "manual_refresh"),
 		)
 		if err := PurgeCloudflareCache(); err != nil {
 			errors = append(errors, fmt.Sprintf("cloudflare cache purge: %v", err))
+			fmt.Printf("- Result:       ✗ Failed (%v)\n", err)
 			logger.Error("❌ Cloudflare cache purge failed",
 				zap.Error(err),
 				zap.String("remote_addr", r.RemoteAddr),
 			)
 		} else {
+			fmt.Println("- Result:       ✓ Success")
 			logger.Info("🎉 Cloudflare cache purge completed successfully!")
 		}
-		logger.Info("═══════════════════════════════════════════════")
-	} else {
-		logger.Debug("Cloudflare cache purge is disabled, skipping...")
 	}
+
+	// Clean all caches (In-Memory cache and Disk cache files)
+	// 清理所有缓存（内存缓存和磁盘缓存文件）
+	dataMutex.Lock()
+	nodesName = []string{}
+	nodesData = make([]map[string]interface{}, 0)
+	nodes = []string{}
+	for name := range cfg.Templates {
+		delete(templates, name)
+	}
+	dataMutex.Unlock()
+
+	// 清理物理磁盘上的订阅节点文件与各模板文件
+	// Delete disk cache files.
+	nodeFilePath := cfg.GetNodeFilePath()
+	if err := os.Remove(nodeFilePath); err != nil && !os.IsNotExist(err) {
+		logger.Warn("Failed to delete node cache file on refresh",
+			zap.String("path", nodeFilePath),
+			zap.Error(err),
+		)
+	}
+
+	for name := range cfg.Templates {
+		tplFilePath := cfg.GetTemplateFilePathByName(name)
+		if err := os.Remove(tplFilePath); err != nil && !os.IsNotExist(err) {
+			logger.Warn("Failed to delete template cache file on refresh",
+				zap.String("template", name),
+				zap.String("path", tplFilePath),
+				zap.Error(err),
+			)
+		}
+	}
+
+	// 定义刷新任务结构体
+	// Define refresh task struct.
+	type refreshTask struct {
+		Name      string
+		URL       string
+		CachePath string
+		FetchFn   func() (string, error)
+		ReloadFn  func() error
+		ActualURL string
+		Err       error
+	}
+
+	// 节点订阅任务
+	// Node subscription task.
+	nodeTask := refreshTask{
+		Name:      "Node Subscription",
+		URL:       cfg.Subscription.URL,
+		CachePath: cfg.GetNodeFilePath(),
+		FetchFn:   fetcher.FetchNodeFileWithURL,
+		ReloadFn:  ReloadData,
+	}
+
+	// 模板任务
+	// Template tasks.
+	var tplTasks []refreshTask
+	for name, tpl := range cfg.Templates {
+		templateName := name
+		templateURL := tpl.URL
+		tplTasks = append(tplTasks, refreshTask{
+			Name:      fmt.Sprintf("Template: %s", templateName),
+			URL:       templateURL,
+			CachePath: cfg.GetTemplateFilePathByName(templateName),
+			FetchFn: func() (string, error) {
+				return fetcher.FetchTemplateFileByNameWithURL(templateName, templateURL)
+			},
+			ReloadFn: func() error {
+				return ReloadTemplateByName(templateName)
+			},
+		})
+	}
+
+	// [2/3] & [3/3] 并发执行所有刷新任务
+	// Concurrent execution of all refresh tasks.
+	var wg sync.WaitGroup
+
+	// 并发刷新节点订阅
+	// Concurrently refresh node subscription.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		actualURL, err := nodeTask.FetchFn()
+		nodeTask.ActualURL = actualURL
+		if err != nil {
+			nodeTask.Err = fmt.Errorf("fetch error: %w", err)
+		} else if err = nodeTask.ReloadFn(); err != nil {
+			nodeTask.Err = fmt.Errorf("reload error: %w", err)
+		}
+	}()
+
+	// 并发刷新所有模板
+	// Concurrently refresh all templates.
+	for i := range tplTasks {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			t := &tplTasks[idx]
+			actualURL, err := t.FetchFn()
+			t.ActualURL = actualURL
+			if err != nil {
+				t.Err = fmt.Errorf("fetch error: %w", err)
+			} else if err = t.ReloadFn(); err != nil {
+				t.Err = fmt.Errorf("reload error: %w", err)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// [2/3] 📦 SUBSCRIPTION REFRESH
+	// [2/3] 打印节点订阅刷新结果
+	fmt.Printf("\n[2/3] 📦 SUBSCRIPTION REFRESH\n")
+	fmt.Println("--------------------------------------------------")
+	fmt.Printf("- Name:         %s\n", nodeTask.Name)
+	fmt.Printf("- URL:          %s\n", nodeTask.ActualURL)
+	fmt.Printf("- Cache Path:   %s\n", nodeTask.CachePath)
+	if nodeTask.Err != nil {
+		fmt.Printf("- Result:       ✗ Failed (%v)\n", nodeTask.Err)
+		errors = append(errors, fmt.Sprintf("%s: %v", nodeTask.Name, nodeTask.Err))
+	} else {
+		fmt.Println("- Result:       ✓ Success")
+	}
+	fmt.Println("--------------------------------------------------")
+
+	// [3/3] 📄 TEMPLATE REFRESH
+	// [3/3] 打印模板刷新结果
+	fmt.Printf("\n[3/3] 📄 TEMPLATE REFRESH\n")
+	fmt.Println("--------------------------------------------------")
+	for i, t := range tplTasks {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("- [Template: %s]\n", strings.TrimPrefix(t.Name, "Template: "))
+		fmt.Printf("  URL:          %s\n", t.ActualURL)
+		fmt.Printf("  Cache Path:   %s\n", t.CachePath)
+		if t.Err != nil {
+			fmt.Printf("  Result:       ✗ Failed (%v)\n", t.Err)
+			errors = append(errors, fmt.Sprintf("%s: %v", t.Name, t.Err))
+		} else {
+			fmt.Println("  Result:       ✓ Success")
+		}
+	}
+	fmt.Println("--------------------------------------------------")
+
+	fmt.Println("\n==================================================")
+	fmt.Println("🔄 MANUAL REFRESH END")
+	fmt.Println("==================================================")
 
 	w.Header().Set("Content-Type", "application/json")
 	if len(errors) > 0 {
